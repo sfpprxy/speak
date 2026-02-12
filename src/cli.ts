@@ -62,9 +62,9 @@ type RuntimeConfig = {
   cacheDir: string;
 };
 
-function defaultCacheDir(): string {
-  return join(process.env.TMPDIR ?? "/tmp", "speaker-tts-cache");
-}
+let runtime = readRuntimeConfig();
+let queue: Promise<void> = Promise.resolve();
+let cachePrepared = false;
 
 function envString(name: string, fallback: string): string {
   return process.env[name] ?? fallback;
@@ -73,32 +73,6 @@ function envString(name: string, fallback: string): string {
 function envNumber(name: string, fallback: string): number {
   return Number(process.env[name] ?? fallback);
 }
-
-function readRuntimeConfig(): RuntimeConfig {
-  return {
-    voice: envString("VOICE", DEFAULTS.VOICE),
-    provider: envString("TTS_PROVIDER", DEFAULTS.TTS_PROVIDER).toLowerCase(),
-    appId: envString("VOLC_TTS_APPID", ""),
-    token: envString("VOLC_TTS_TOKEN", ""),
-    cluster: envString("VOLC_TTS_CLUSTER", DEFAULTS.VOLC_TTS_CLUSTER),
-    resourceId: envString("VOLC_TTS_RESOURCE_ID", DEFAULTS.VOLC_TTS_RESOURCE_ID),
-    voiceType: envString("VOLC_TTS_VOICE_TYPE", DEFAULTS.VOLC_TTS_VOICE_TYPE),
-    model: envString("VOLC_TTS_MODEL", DEFAULTS.VOLC_TTS_MODEL),
-    encoding: envString("VOLC_TTS_ENCODING", DEFAULTS.VOLC_TTS_ENCODING),
-    rate: envNumber("VOLC_TTS_RATE", DEFAULTS.VOLC_TTS_RATE),
-    speed: envNumber("VOLC_TTS_SPEED", DEFAULTS.VOLC_TTS_SPEED),
-    volume: envNumber("VOLC_TTS_VOLUME", DEFAULTS.VOLC_TTS_VOLUME),
-    pitch: envNumber("VOLC_TTS_PITCH", DEFAULTS.VOLC_TTS_PITCH),
-    maxTextLen: envNumber("MAX_TTS_TEXT_LEN", DEFAULTS.MAX_TTS_TEXT_LEN),
-    timeoutMs: envNumber("TTS_TIMEOUT_MS", DEFAULTS.TTS_TIMEOUT_MS),
-    cacheDir: process.env.TTS_CACHE_DIR ?? defaultCacheDir(),
-  };
-}
-
-let runtime = readRuntimeConfig();
-
-let queue: Promise<void> = Promise.resolve();
-let cachePrepared = false;
 
 function stripAudioDataUriPrefix(value: string): string {
   return value.replace(DATA_URI_AUDIO_PREFIX, "").trim();
@@ -125,6 +99,24 @@ export function concatBytes(chunks: Uint8Array[]): Uint8Array {
     offset += chunk.length;
   }
   return merged;
+}
+
+export function toSpeechRate(speedRatio: number): number {
+  if (!Number.isFinite(speedRatio)) return 0;
+  const value = Math.round((speedRatio - 1) * 100);
+  return Math.max(-50, Math.min(100, value));
+}
+
+export function toLoudnessRate(volumeRatio: number): number {
+  if (!Number.isFinite(volumeRatio)) return 0;
+  const value = Math.round((volumeRatio - 1) * 100);
+  return Math.max(-50, Math.min(100, value));
+}
+
+export function toPitchSemitone(pitchRatio: number): number {
+  if (!Number.isFinite(pitchRatio)) return 0;
+  const semitone = Math.round(12 * Math.log2(Math.max(0.25, pitchRatio)));
+  return Math.max(-12, Math.min(12, semitone));
 }
 
 export function extractBase64Audio(payload: unknown): string {
@@ -155,24 +147,6 @@ export function extractAudioChunksFromStreamingJson(text: string): Uint8Array[] 
     audioChunks.push(Buffer.from(maybeBase64, "base64"));
   }
   return audioChunks;
-}
-
-export function toSpeechRate(speedRatio: number): number {
-  if (!Number.isFinite(speedRatio)) return 0;
-  const value = Math.round((speedRatio - 1) * 100);
-  return Math.max(-50, Math.min(100, value));
-}
-
-export function toLoudnessRate(volumeRatio: number): number {
-  if (!Number.isFinite(volumeRatio)) return 0;
-  const value = Math.round((volumeRatio - 1) * 100);
-  return Math.max(-50, Math.min(100, value));
-}
-
-export function toPitchSemitone(pitchRatio: number): number {
-  if (!Number.isFinite(pitchRatio)) return 0;
-  const semitone = Math.round(12 * Math.log2(Math.max(0.25, pitchRatio)));
-  return Math.max(-12, Math.min(12, semitone));
 }
 
 export function decodeTtsResponseBody(responseBytes: Uint8Array, contentType: string): Uint8Array {
@@ -221,67 +195,48 @@ function maskSecret(value: string): string {
   return `${value.slice(0, 4)}***${value.slice(-2)}`;
 }
 
-function isDebugEnabled(): boolean {
-  return ["1", "true", "yes", "on"].includes((process.env.SPEAKER_DEBUG ?? "").toLowerCase());
-}
-
 function debugLog(message: string): void {
-  if (isDebugEnabled()) {
+  if (["1", "true", "yes", "on"].includes((process.env.SPEAKER_DEBUG ?? "").toLowerCase())) {
     console.error(`[speaker:debug] ${message}`);
   }
 }
 
-function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
-  let debug = false;
-  let printConfig = false;
-  const cleanArgs: string[] = [];
-  for (const arg of argv) {
-    if (arg === "--debug" || arg === "-d") {
-      debug = true;
-      continue;
-    }
-    if (arg === "--print-config" || arg === "--config") {
-      printConfig = true;
-      continue;
-    }
-    cleanArgs.push(arg);
-  }
-
-  if (debug && !process.env.SPEAKER_DEBUG) {
-    process.env.SPEAKER_DEBUG = "1";
-  }
-
-  return { text: parseTextFromArgs(cleanArgs), printConfig };
+function readRuntimeConfig(): RuntimeConfig {
+  return {
+    voice: envString("VOICE", DEFAULTS.VOICE),
+    provider: envString("TTS_PROVIDER", DEFAULTS.TTS_PROVIDER).toLowerCase(),
+    appId: envString("VOLC_TTS_APPID", ""),
+    token: envString("VOLC_TTS_TOKEN", ""),
+    cluster: envString("VOLC_TTS_CLUSTER", DEFAULTS.VOLC_TTS_CLUSTER),
+    resourceId: envString("VOLC_TTS_RESOURCE_ID", DEFAULTS.VOLC_TTS_RESOURCE_ID),
+    voiceType: envString("VOLC_TTS_VOICE_TYPE", DEFAULTS.VOLC_TTS_VOICE_TYPE),
+    model: envString("VOLC_TTS_MODEL", DEFAULTS.VOLC_TTS_MODEL),
+    encoding: envString("VOLC_TTS_ENCODING", DEFAULTS.VOLC_TTS_ENCODING),
+    rate: envNumber("VOLC_TTS_RATE", DEFAULTS.VOLC_TTS_RATE),
+    speed: envNumber("VOLC_TTS_SPEED", DEFAULTS.VOLC_TTS_SPEED),
+    volume: envNumber("VOLC_TTS_VOLUME", DEFAULTS.VOLC_TTS_VOLUME),
+    pitch: envNumber("VOLC_TTS_PITCH", DEFAULTS.VOLC_TTS_PITCH),
+    maxTextLen: envNumber("MAX_TTS_TEXT_LEN", DEFAULTS.MAX_TTS_TEXT_LEN),
+    timeoutMs: envNumber("TTS_TIMEOUT_MS", DEFAULTS.TTS_TIMEOUT_MS),
+    cacheDir: process.env.TTS_CACHE_DIR ?? join(process.env.TMPDIR ?? "/tmp", "speaker-tts-cache"),
+  };
 }
 
-function parseTextFromArgs(argv: string[]): string {
-  const index = argv.findIndex((arg) => arg === "--text" || arg === "-t");
-  if (index >= 0) {
-    return argv[index + 1] ?? "";
-  }
-  return argv.join(" ");
-}
-
-function readPlistEnvValue(key: string): string {
-  const out = spawnSync("/usr/libexec/PlistBuddy", ["-c", `Print :EnvironmentVariables:${key}`, PLIST_PATH], {
-    encoding: "utf8",
-  });
-  if (out.status !== 0) return "";
-  return out.stdout.trim();
+function refreshRuntimeConfig(): void {
+  runtime = readRuntimeConfig();
 }
 
 function hydrateEnvFromPlist(): void {
   for (const key of ENV_KEYS) {
     if (process.env[key]) continue;
-    const value = readPlistEnvValue(key);
+    const out = spawnSync("/usr/libexec/PlistBuddy", ["-c", `Print :EnvironmentVariables:${key}`, PLIST_PATH], {
+      encoding: "utf8",
+    });
+    const value = out.status === 0 ? out.stdout.trim() : "";
     if (value) {
       process.env[key] = value;
     }
   }
-}
-
-function refreshRuntimeConfig(): void {
-  runtime = readRuntimeConfig();
 }
 
 function printSafeConfig(): void {
@@ -310,6 +265,32 @@ function printSafeConfig(): void {
   for (const [key, value] of fields) {
     console.log(`${key}=${value}`);
   }
+}
+
+function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
+  let debug = false;
+  let printConfig = false;
+  const cleanArgs: string[] = [];
+  for (const arg of argv) {
+    if (arg === "--debug" || arg === "-d") {
+      debug = true;
+      continue;
+    }
+    if (arg === "--print-config" || arg === "--config") {
+      printConfig = true;
+      continue;
+    }
+    cleanArgs.push(arg);
+  }
+
+  if (debug && !process.env.SPEAKER_DEBUG) {
+    process.env.SPEAKER_DEBUG = "1";
+  }
+
+  const textIndex = cleanArgs.findIndex((arg) => arg === "--text" || arg === "-t");
+  const text = textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" ");
+
+  return { text, printConfig };
 }
 
 function withTimeoutSignal(timeoutMs: number): AbortSignal {
@@ -343,19 +324,6 @@ async function cleanupOldCacheFiles(days = 7): Promise<void> {
   }
 }
 
-async function fallbackSpeakWithSay(text: string): Promise<void> {
-  debugLog(`fallback say start voice=${runtime.voice} text_len=${text.length}`);
-  const proc = Bun.spawn(["say", "-v", runtime.voice, text], {
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  const exitCode = await proc.exited;
-  debugLog(`fallback say exit_code=${exitCode}`);
-  if (exitCode !== 0) {
-    throw new Error(`say exited with code ${exitCode}`);
-  }
-}
-
 async function playMp3File(path: string): Promise<void> {
   debugLog(`afplay start file=${path}`);
   const proc = Bun.spawn(["afplay", path], {
@@ -366,6 +334,19 @@ async function playMp3File(path: string): Promise<void> {
   debugLog(`afplay exit_code=${exitCode}`);
   if (exitCode !== 0) {
     throw new Error(`afplay exited with code ${exitCode}`);
+  }
+}
+
+async function fallbackSpeakWithSay(text: string): Promise<void> {
+  debugLog(`fallback say start voice=${runtime.voice} text_len=${text.length}`);
+  const proc = Bun.spawn(["say", "-v", runtime.voice, text], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const exitCode = await proc.exited;
+  debugLog(`fallback say exit_code=${exitCode}`);
+  if (exitCode !== 0) {
+    throw new Error(`say exited with code ${exitCode}`);
   }
 }
 
@@ -423,7 +404,8 @@ async function synthesizeDoubaoMp3(text: string): Promise<Uint8Array> {
   return decodeTtsResponseBody(responseBytes, contentType);
 }
 
-function cacheKeyFor(text: string): string {
+async function synthesizeAndPlayWithDoubao(text: string): Promise<void> {
+  await ensureCacheDir();
   const key = [
     text,
     runtime.cluster,
@@ -436,12 +418,7 @@ function cacheKeyFor(text: string): string {
     String(runtime.volume),
     String(runtime.pitch),
   ].join("|");
-  return createHash("sha256").update(key).digest("hex");
-}
-
-async function synthesizeAndPlayWithDoubao(text: string): Promise<void> {
-  await ensureCacheDir();
-  const filePath = join(runtime.cacheDir, `${cacheKeyFor(text)}.mp3`);
+  const filePath = join(runtime.cacheDir, `${createHash("sha256").update(key).digest("hex")}.mp3`);
 
   const exists = await fs
     .access(filePath)
@@ -519,7 +496,6 @@ async function main() {
 
   cleanupOldCacheFiles().catch(() => {});
   await speak(text);
-  console.log("spoken");
 }
 
 if (import.meta.main) {

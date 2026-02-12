@@ -62,3 +62,4 @@ bun run src/cli.ts --text "任务完成"
 cd ~/Sync/Work/speaker
 bun test
 ```
+
