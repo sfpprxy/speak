@@ -1,0 +1,15 @@
+{
+  "name": "@sfpprxy/speak-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "speak binary for win32 x64",
+  "license": "MIT",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["bin/speak.exe"],
+  "scripts": {
+    "prepack": "bun ../../scripts/build-one-binary.ts bun-windows-x64-baseline ./bin/speak.exe"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

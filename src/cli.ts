@@ -224,16 +224,92 @@ async function synthesizeDoubaoMp3(text: string): Promise<Uint8Array> {
 }
 
 async function playMp3File(path: string): Promise<void> {
-  await runAudioCommand(["afplay", path], `afplay start file=${path}`, "afplay exit_code=", "afplay");
+  const candidates = getAudioCommandCandidates(path);
+  const errors: string[] = [];
+
+  for (const args of candidates) {
+    const tool = args[0];
+    try {
+      await runAudioCommand(args, `${tool} start file=${path}`, `${tool} exit_code=`, tool);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${tool}: ${message}`);
+      debugLog(`${tool} failed: ${message}`);
+    }
+  }
+
+  throw new Error(`No audio player available on ${process.platform}. ${getAudioInstallHint()} Tried: ${errors.join(" | ")}`);
 }
 
 async function runAudioCommand(args: string[], startLog: string, endLogPrefix: string, errorName: string): Promise<void> {
   debugLog(startLog);
-  const exitCode = await Bun.spawn(args, { stdout: "ignore", stderr: "ignore" }).exited;
+  let exitCode = -1;
+  try {
+    exitCode = await Bun.spawn(args, { stdout: "ignore", stderr: "ignore" }).exited;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${errorName} failed to start: ${message}`);
+  }
   debugLog(`${endLogPrefix}${exitCode}`);
   if (exitCode !== 0) {
     throw new Error(`${errorName} exited with code ${exitCode}`);
   }
+}
+
+function getAudioCommandCandidates(path: string): string[][] {
+  if (process.platform === "darwin") {
+    return [
+      ["afplay", path],
+      ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", path],
+      ["mpv", "--no-video", "--really-quiet", path],
+    ];
+  }
+
+  if (process.platform === "linux") {
+    return [
+      ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", path],
+      ["mpv", "--no-video", "--really-quiet", path],
+      ["paplay", path],
+      ["aplay", path],
+      ["play", "-q", path],
+    ];
+  }
+
+  if (process.platform === "win32") {
+    return [
+      [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        getWindowsMediaPlayerScript(path),
+      ],
+      ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", path],
+    ];
+  }
+
+  return [
+    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", path],
+    ["mpv", "--no-video", "--really-quiet", path],
+  ];
+}
+
+function getWindowsMediaPlayerScript(path: string): string {
+  const escapedPath = path.replace(/\\/g, "/").replace(/'/g, "''");
+  return `$ErrorActionPreference='Stop'; $p=New-Object -ComObject WMPlayer.OCX; $p.URL='${escapedPath}'; $p.controls.play(); while ($p.playState -ne 1) { Start-Sleep -Milliseconds 100 }; $p.close();`;
+}
+
+function getAudioInstallHint(): string {
+  if (process.platform === "darwin") {
+    return "Install ffmpeg (ffplay) or mpv if afplay is unavailable.";
+  }
+  if (process.platform === "linux") {
+    return "Install ffmpeg (ffplay) or mpv for audio playback.";
+  }
+  if (process.platform === "win32") {
+    return "Enable Windows Media Player or install ffmpeg (ffplay).";
+  }
+  return "Install ffmpeg (ffplay) or mpv for audio playback.";
 }
 
 async function cleanupOldCacheFiles(days = 7): Promise<void> {
@@ -376,6 +452,7 @@ function readRuntimeConfig(): RuntimeConfig {
 }
 
 function hydrateEnvFromPlist(): void {
+  if (process.platform !== "darwin") return;
   for (const key of ENV_KEYS) {
     if (process.env[key]) continue;
     const out = spawnSync("/usr/libexec/PlistBuddy", ["-c", `Print :EnvironmentVariables:${key}`, PLIST_PATH], {

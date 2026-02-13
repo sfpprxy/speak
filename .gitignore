@@ -1,19 +1,30 @@
-# macOS
+# OS files
 .DS_Store
 
-# dependencies
+# Dependencies
 node_modules/
 
-# build/cache
-bun.lockb
+# Build / packaging artifacts
 bun.lock
+bun.lockb
+*.bun-build
 *.log
+*.tgz
+.publish-logs/
+dist/
+packages/*/bin/
 
-# local env
+# Generated docs / local scripts
+AGENTS.html
+HANDOFF.*
+publish.sh
+speak.sh
+
+# Local environment
 .env
 .env.*
 !.env.example
 
-# editor
-.vscode/
+# Editors
 .idea/
+.vscode/

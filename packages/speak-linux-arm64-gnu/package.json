@@ -1,0 +1,16 @@
+{
+  "name": "@sfpprxy/speak-linux-arm64-gnu",
+  "version": "0.1.0",
+  "description": "speak binary for linux arm64 glibc",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["glibc"],
+  "files": ["bin/speak"],
+  "scripts": {
+    "prepack": "bun ../../scripts/build-one-binary.ts bun-linux-arm64 ./bin/speak"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@sfpprxy/speak-darwin-arm64",
+  "version": "0.1.0",
+  "description": "speak binary for darwin arm64",
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": ["bin/speak"],
+  "scripts": {
+    "prepack": "bun ../../scripts/build-one-binary.ts bun-darwin-arm64 ./bin/speak"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
