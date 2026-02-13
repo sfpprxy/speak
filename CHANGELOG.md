@@ -6,6 +6,12 @@ The format is based on Keep a Changelog and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-02-13
+
+### Changed
+- Release workflow guidance now defines a commit message format for single-commit releases:
+  - `release: x.y.z([short desc](link-to-release-notes-on-release-page))`
+
 ## [0.1.9] - 2026-02-13
 
 ### Added

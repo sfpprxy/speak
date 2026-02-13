@@ -1,6 +1,6 @@
 {
   "name": "@sfpprxy/speak",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Cross-platform local TTS speaker CLI.",
   "license": "MIT",
   "type": "module",
@@ -13,13 +13,13 @@
     "README.zh-CN.md"
   ],
   "optionalDependencies": {
-    "@sfpprxy/speak-darwin-arm64": "0.1.9",
-    "@sfpprxy/speak-darwin-x64": "0.1.9",
-    "@sfpprxy/speak-linux-arm64-gnu": "0.1.9",
-    "@sfpprxy/speak-linux-arm64-musl": "0.1.9",
-    "@sfpprxy/speak-linux-x64-gnu": "0.1.9",
-    "@sfpprxy/speak-linux-x64-musl": "0.1.9",
-    "@sfpprxy/speak-win32-x64-msvc": "0.1.9"
+    "@sfpprxy/speak-darwin-arm64": "0.1.10",
+    "@sfpprxy/speak-darwin-x64": "0.1.10",
+    "@sfpprxy/speak-linux-arm64-gnu": "0.1.10",
+    "@sfpprxy/speak-linux-arm64-musl": "0.1.10",
+    "@sfpprxy/speak-linux-x64-gnu": "0.1.10",
+    "@sfpprxy/speak-linux-x64-musl": "0.1.10",
+    "@sfpprxy/speak-win32-x64-msvc": "0.1.10"
   },
   "scripts": {
     "speak": "bun run src/cli.ts",

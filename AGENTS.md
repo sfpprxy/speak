@@ -76,3 +76,4 @@ bun run /Users/joe/Sync/Work/speaker/src/cli.ts "report content"
 1. For releases, always commit and tag before pushing.
 2. For releases, always run tests and a final check before creating the tagged release commit.
 3. For releases, stop immediately on any failure.
+4. For commits, use a message that clearly describes the change. If one commit includes all changes and releases a version, use: `release: x.y.z([short desc](link-to-release-notes-on-release-page))`.

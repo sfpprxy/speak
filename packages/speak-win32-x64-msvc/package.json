@@ -1,6 +1,6 @@
 {
   "name": "@sfpprxy/speak-win32-x64-msvc",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "speak binary for win32 x64",
   "license": "MIT",
   "os": ["win32"],
