@@ -66,262 +66,110 @@ let runtime = readRuntimeConfig();
 let queue: Promise<void> = Promise.resolve();
 let cachePrepared = false;
 
-function envString(name: string, fallback: string): string {
-  return process.env[name] ?? fallback;
-}
-
-function envNumber(name: string, fallback: string): number {
-  return Number(process.env[name] ?? fallback);
-}
-
-function stripAudioDataUriPrefix(value: string): string {
-  return value.replace(DATA_URI_AUDIO_PREFIX, "").trim();
-}
-
-function isLikelyBase64(value: string): boolean {
-  if (value.length < 8) return false;
-  if (value.length % 4 !== 0) return false;
-  return BASE64_REGEX.test(value);
-}
-
-export function normalizeText(input: string, maxLen = 400): string {
-  const trimmed = input.replace(/\s+/g, " ").trim();
-  if (!trimmed) return "";
-  return trimmed.length > maxLen ? trimmed.slice(0, maxLen) : trimmed;
-}
-
-export function concatBytes(chunks: Uint8Array[]): Uint8Array {
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-}
-
-function ratioToPercentRate(ratio: number, min: number, max: number): number {
-  if (!Number.isFinite(ratio)) return 0;
-  return Math.max(min, Math.min(max, Math.round((ratio - 1) * 100)));
-}
-
-export function toSpeechRate(speedRatio: number): number {
-  return ratioToPercentRate(speedRatio, -50, 100);
-}
-
-export function toLoudnessRate(volumeRatio: number): number {
-  return ratioToPercentRate(volumeRatio, -50, 100);
-}
-
-export function toPitchSemitone(pitchRatio: number): number {
-  if (!Number.isFinite(pitchRatio)) return 0;
-  const semitone = Math.round(12 * Math.log2(Math.max(0.25, pitchRatio)));
-  return Math.max(-12, Math.min(12, semitone));
-}
-
-export function extractBase64Audio(payload: unknown): string {
-  const data = payload as Record<string, unknown> | null;
-  const result = data && typeof data.result === "object" ? (data.result as Record<string, unknown>) : null;
-  const innerData = data && typeof data.data === "object" ? (data.data as Record<string, unknown>) : null;
-
-  const candidates = [data?.data, data?.audio, result?.audio, innerData?.audio, result?.data];
-
-  for (const value of candidates) {
-    if (typeof value !== "string") continue;
-    const cleaned = stripAudioDataUriPrefix(value);
-    if (isLikelyBase64(cleaned)) {
-      return cleaned;
-    }
+async function main() {
+  const { text, printConfig } = parseCliArgs(process.argv.slice(2));
+  hydrateEnvFromPlist();
+  refreshRuntimeConfig();
+  for (const message of [
+    `cli cwd=${process.cwd()}`,
+    `cli plist=${PLIST_PATH}`,
+    `cli provider=${process.env.TTS_PROVIDER ?? "doubao"}`,
+    `cli voice=${process.env.VOICE ?? "Samantha"}`,
+    `cli volc.appid=${maskSecret(process.env.VOLC_TTS_APPID ?? "")}`,
+    `cli volc.token=${maskSecret(process.env.VOLC_TTS_TOKEN ?? "")}`,
+    `cli volc.resource_id=${process.env.VOLC_TTS_RESOURCE_ID ?? ""}`,
+    `cli volc.voice_type=${process.env.VOLC_TTS_VOICE_TYPE ?? ""}`,
+    `cli text.length=${text.length}`,
+  ]) {
+    debugLog(message);
   }
 
-  throw new Error("No base64 audio found in response");
+  if (printConfig) {
+    printSafeConfig();
+    return;
+  }
+
+  if (!text.trim()) {
+    console.error("usage: bun run src/cli.ts [--debug|-d] [--print-config|--config] --text \"hello\"");
+    console.error("   or: bun run src/cli.ts [--debug|-d] [--print-config|--config] \"hello\"");
+    process.exit(1);
+  }
+
+  cleanupOldCacheFiles().catch(() => {});
+  await speak(text);
 }
 
-export function extractAudioChunksFromStreamingJson(text: string): Uint8Array[] {
-  const audioChunks: Uint8Array[] = [];
-  const dataFieldRegex = /"data":"([^"]+)"/g;
-  let match: RegExpExecArray | null = null;
-  while ((match = dataFieldRegex.exec(text)) !== null) {
-    const maybeBase64 = stripAudioDataUriPrefix(match[1]);
-    if (!isLikelyBase64(maybeBase64)) continue;
-    audioChunks.push(Buffer.from(maybeBase64, "base64"));
-  }
-  return audioChunks;
+if (import.meta.main) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`speak failed: ${message}`);
+    process.exit(1);
+  });
 }
 
-export function decodeTtsResponseBody(responseBytes: Uint8Array, contentType: string): Uint8Array {
-  if (responseBytes.byteLength === 0) {
-    throw new Error("TTS returned empty audio buffer");
+export function speak(rawText: string): Promise<void> {
+  const task = queue.then(() => speakInternal(rawText));
+  queue = task.catch(() => {});
+  return task;
+}
+
+export async function speakOnce(rawText: string): Promise<void> {
+  await speakInternal(rawText);
+}
+
+async function speakInternal(rawText: string): Promise<void> {
+  refreshRuntimeConfig();
+  const text = normalizeText(rawText, runtime.maxTextLen);
+  if (!text) {
+    throw new Error("text is required");
+  }
+  debugLog(`speak start provider=${runtime.provider} text_len=${text.length}`);
+
+  if (runtime.provider === "say") {
+    await fallbackSpeakWithSay(text);
+    return;
   }
 
-  const normalizedContentType = contentType.toLowerCase();
-  const likelyJson =
-    normalizedContentType.includes("application/json") ||
-    normalizedContentType.includes("text/plain") ||
-    responseBytes[0] === 0x7b;
-
-  if (!likelyJson) {
-    return responseBytes;
-  }
-
-  const text = new TextDecoder().decode(responseBytes);
   try {
-    const parsed = JSON.parse(text);
-    const apiCode = (parsed as any)?.header?.code ?? (parsed as any)?.code;
-    if (typeof apiCode === "number" && apiCode !== 0 && apiCode !== 20000000) {
-      const message = (parsed as any)?.header?.message ?? (parsed as any)?.message ?? "unknown error";
-      throw new Error(`TTS API ${apiCode}: ${message}`);
-    }
-
-    const base64 = extractBase64Audio(parsed);
-    return Buffer.from(base64, "base64");
+    await synthesizeAndPlayWithDoubao(text);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("TTS API ")) {
-      throw error;
-    }
-
-    const chunks = extractAudioChunksFromStreamingJson(text);
-    if (chunks.length > 0) {
-      return concatBytes(chunks);
-    }
-
-    throw new Error("TTS JSON response did not include audio data");
+    const reason = error instanceof Error ? error.message : String(error);
+    debugLog(`doubao failed reason=${reason}`);
+    await fallbackSpeakWithSay(text);
   }
 }
 
-function maskSecret(value: string): string {
-  if (!value) return "";
-  if (value.length <= 8) return `${value.slice(0, 2)}***`;
-  return `${value.slice(0, 4)}***${value.slice(-2)}`;
-}
+async function synthesizeAndPlayWithDoubao(text: string): Promise<void> {
+  await ensureCacheDir();
+  const key = [
+    text,
+    runtime.cluster,
+    runtime.resourceId,
+    runtime.voiceType,
+    runtime.model,
+    runtime.encoding,
+    String(runtime.rate),
+    String(runtime.speed),
+    String(runtime.volume),
+    String(runtime.pitch),
+  ].join("|");
+  const filePath = join(runtime.cacheDir, `${createHash("sha256").update(key).digest("hex")}.mp3`);
 
-function debugLog(message: string): void {
-  if (["1", "true", "yes", "on"].includes((process.env.SPEAKER_DEBUG ?? "").toLowerCase())) {
-    console.error(`[speaker:debug] ${message}`);
-  }
-}
+  const exists = await fs
+    .access(filePath)
+    .then(() => true)
+    .catch(() => false);
 
-function readRuntimeConfig(): RuntimeConfig {
-  return {
-    voice: envString("VOICE", DEFAULTS.VOICE),
-    provider: envString("TTS_PROVIDER", DEFAULTS.TTS_PROVIDER).toLowerCase(),
-    appId: envString("VOLC_TTS_APPID", ""),
-    token: envString("VOLC_TTS_TOKEN", ""),
-    cluster: envString("VOLC_TTS_CLUSTER", DEFAULTS.VOLC_TTS_CLUSTER),
-    resourceId: envString("VOLC_TTS_RESOURCE_ID", DEFAULTS.VOLC_TTS_RESOURCE_ID),
-    voiceType: envString("VOLC_TTS_VOICE_TYPE", DEFAULTS.VOLC_TTS_VOICE_TYPE),
-    model: envString("VOLC_TTS_MODEL", DEFAULTS.VOLC_TTS_MODEL),
-    encoding: envString("VOLC_TTS_ENCODING", DEFAULTS.VOLC_TTS_ENCODING),
-    rate: envNumber("VOLC_TTS_RATE", DEFAULTS.VOLC_TTS_RATE),
-    speed: envNumber("VOLC_TTS_SPEED", DEFAULTS.VOLC_TTS_SPEED),
-    volume: envNumber("VOLC_TTS_VOLUME", DEFAULTS.VOLC_TTS_VOLUME),
-    pitch: envNumber("VOLC_TTS_PITCH", DEFAULTS.VOLC_TTS_PITCH),
-    maxTextLen: envNumber("MAX_TTS_TEXT_LEN", DEFAULTS.MAX_TTS_TEXT_LEN),
-    timeoutMs: envNumber("TTS_TIMEOUT_MS", DEFAULTS.TTS_TIMEOUT_MS),
-    cacheDir: process.env.TTS_CACHE_DIR ?? join(process.env.TMPDIR ?? "/tmp", "speaker-tts-cache"),
-  };
-}
-
-function refreshRuntimeConfig(): void {
-  runtime = readRuntimeConfig();
-}
-
-function hydrateEnvFromPlist(): void {
-  for (const key of ENV_KEYS) {
-    if (process.env[key]) continue;
-    const out = spawnSync("/usr/libexec/PlistBuddy", ["-c", `Print :EnvironmentVariables:${key}`, PLIST_PATH], {
-      encoding: "utf8",
-    });
-    const value = out.status === 0 ? out.stdout.trim() : "";
-    if (value) {
-      process.env[key] = value;
-    }
-  }
-}
-
-function printSafeConfig(): void {
-  const tmpdir = process.env.TMPDIR ?? "/tmp/";
-  const cacheDir = process.env.TTS_CACHE_DIR ?? `${tmpdir.replace(/\/?$/, "/")}speaker-tts-cache`;
-  const fields = [
-    ["SPEAKER_DEBUG", process.env.SPEAKER_DEBUG ?? ""],
-    ["TTS_PROVIDER", process.env.TTS_PROVIDER ?? DEFAULTS.TTS_PROVIDER],
-    ["VOICE", process.env.VOICE ?? DEFAULTS.VOICE],
-    ["VOLC_TTS_APPID", maskSecret(process.env.VOLC_TTS_APPID ?? "")],
-    ["VOLC_TTS_TOKEN", maskSecret(process.env.VOLC_TTS_TOKEN ?? "")],
-    ["VOLC_TTS_CLUSTER", process.env.VOLC_TTS_CLUSTER ?? DEFAULTS.VOLC_TTS_CLUSTER],
-    ["VOLC_TTS_RESOURCE_ID", process.env.VOLC_TTS_RESOURCE_ID ?? DEFAULTS.VOLC_TTS_RESOURCE_ID],
-    ["VOLC_TTS_VOICE_TYPE", process.env.VOLC_TTS_VOICE_TYPE ?? DEFAULTS.VOLC_TTS_VOICE_TYPE],
-    ["VOLC_TTS_MODEL", process.env.VOLC_TTS_MODEL ?? DEFAULTS.VOLC_TTS_MODEL],
-    ["VOLC_TTS_ENCODING", process.env.VOLC_TTS_ENCODING ?? DEFAULTS.VOLC_TTS_ENCODING],
-    ["VOLC_TTS_RATE", process.env.VOLC_TTS_RATE ?? DEFAULTS.VOLC_TTS_RATE],
-    ["VOLC_TTS_SPEED", process.env.VOLC_TTS_SPEED ?? DEFAULTS.VOLC_TTS_SPEED],
-    ["VOLC_TTS_VOLUME", process.env.VOLC_TTS_VOLUME ?? DEFAULTS.VOLC_TTS_VOLUME],
-    ["VOLC_TTS_PITCH", process.env.VOLC_TTS_PITCH ?? DEFAULTS.VOLC_TTS_PITCH],
-    ["MAX_TTS_TEXT_LEN", process.env.MAX_TTS_TEXT_LEN ?? DEFAULTS.MAX_TTS_TEXT_LEN],
-    ["TTS_TIMEOUT_MS", process.env.TTS_TIMEOUT_MS ?? DEFAULTS.TTS_TIMEOUT_MS],
-    ["TTS_CACHE_DIR", cacheDir],
-  ] as const;
-
-  for (const [key, value] of fields) {
-    console.log(`${key}=${value}`);
-  }
-}
-
-export function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
-  let debug = false;
-  let printConfig = false;
-  const cleanArgs: string[] = [];
-  for (const arg of argv) {
-    if (arg === "--debug" || arg === "-d") debug = true;
-    else if (arg === "--print-config" || arg === "--config") printConfig = true;
-    else cleanArgs.push(arg);
+  if (!exists) {
+    debugLog(`cache miss file=${filePath}`);
+    const audioBytes = await synthesizeDoubaoMp3(text);
+    await Bun.write(filePath, audioBytes);
+    debugLog(`cache write bytes=${audioBytes.length}`);
+  } else {
+    debugLog(`cache hit file=${filePath}`);
   }
 
-  if (debug && !process.env.SPEAKER_DEBUG) process.env.SPEAKER_DEBUG = "1";
-
-  const textIndex = cleanArgs.findIndex((arg) => arg === "--text" || arg === "-t");
-  return { text: textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" "), printConfig };
-}
-
-async function ensureCacheDir(): Promise<void> {
-  if (cachePrepared) return;
-  await fs.mkdir(runtime.cacheDir, { recursive: true });
-  cachePrepared = true;
-}
-
-async function cleanupOldCacheFiles(days = 7): Promise<void> {
-  try {
-    await ensureCacheDir();
-    const files = await fs.readdir(runtime.cacheDir);
-    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-    await Promise.all(
-      files.map(async (name) => {
-        const path = join(runtime.cacheDir, name);
-        const stat = await fs.stat(path).catch(() => null);
-        if (stat && stat.mtimeMs < cutoff) {
-          await fs.unlink(path).catch(() => {});
-        }
-      }),
-    );
-  } catch {
-    // ignore cache cleanup errors
-  }
-}
-
-async function runAudioCommand(args: string[], startLog: string, endLogPrefix: string, errorName: string): Promise<void> {
-  debugLog(startLog);
-  const exitCode = await Bun.spawn(args, { stdout: "ignore", stderr: "ignore" }).exited;
-  debugLog(`${endLogPrefix}${exitCode}`);
-  if (exitCode !== 0) {
-    throw new Error(`${errorName} exited with code ${exitCode}`);
-  }
-}
-
-async function playMp3File(path: string): Promise<void> {
-  await runAudioCommand(["afplay", path], `afplay start file=${path}`, "afplay exit_code=", "afplay");
-}
-
-async function fallbackSpeakWithSay(text: string): Promise<void> {
-  await runAudioCommand(
-    ["say", "-v", runtime.voice, text],
-    `fallback say start voice=${runtime.voice} text_len=${text.length}`,
-    "fallback say exit_code=",
-    "say",
-  );
+  await playMp3File(filePath);
 }
 
 async function synthesizeDoubaoMp3(text: string): Promise<Uint8Array> {
@@ -378,108 +226,260 @@ async function synthesizeDoubaoMp3(text: string): Promise<Uint8Array> {
   return decodeTtsResponseBody(responseBytes, contentType);
 }
 
-async function synthesizeAndPlayWithDoubao(text: string): Promise<void> {
-  await ensureCacheDir();
-  const key = [
-    text,
-    runtime.cluster,
-    runtime.resourceId,
-    runtime.voiceType,
-    runtime.model,
-    runtime.encoding,
-    String(runtime.rate),
-    String(runtime.speed),
-    String(runtime.volume),
-    String(runtime.pitch),
-  ].join("|");
-  const filePath = join(runtime.cacheDir, `${createHash("sha256").update(key).digest("hex")}.mp3`);
-
-  const exists = await fs
-    .access(filePath)
-    .then(() => true)
-    .catch(() => false);
-
-  if (!exists) {
-    debugLog(`cache miss file=${filePath}`);
-    const audioBytes = await synthesizeDoubaoMp3(text);
-    await Bun.write(filePath, audioBytes);
-    debugLog(`cache write bytes=${audioBytes.length}`);
-  } else {
-    debugLog(`cache hit file=${filePath}`);
-  }
-
-  await playMp3File(filePath);
+async function fallbackSpeakWithSay(text: string): Promise<void> {
+  await runAudioCommand(
+    ["say", "-v", runtime.voice, text],
+    `fallback say start voice=${runtime.voice} text_len=${text.length}`,
+    "fallback say exit_code=",
+    "say",
+  );
 }
 
-async function speakInternal(rawText: string): Promise<void> {
-  refreshRuntimeConfig();
-  const text = normalizeText(rawText, runtime.maxTextLen);
-  if (!text) {
-    throw new Error("text is required");
-  }
-  debugLog(`speak start provider=${runtime.provider} text_len=${text.length}`);
+async function playMp3File(path: string): Promise<void> {
+  await runAudioCommand(["afplay", path], `afplay start file=${path}`, "afplay exit_code=", "afplay");
+}
 
-  if (runtime.provider === "say") {
-    await fallbackSpeakWithSay(text);
-    return;
+async function runAudioCommand(args: string[], startLog: string, endLogPrefix: string, errorName: string): Promise<void> {
+  debugLog(startLog);
+  const exitCode = await Bun.spawn(args, { stdout: "ignore", stderr: "ignore" }).exited;
+  debugLog(`${endLogPrefix}${exitCode}`);
+  if (exitCode !== 0) {
+    throw new Error(`${errorName} exited with code ${exitCode}`);
   }
+}
 
+async function cleanupOldCacheFiles(days = 7): Promise<void> {
   try {
-    await synthesizeAndPlayWithDoubao(text);
+    await ensureCacheDir();
+    const files = await fs.readdir(runtime.cacheDir);
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    await Promise.all(
+      files.map(async (name) => {
+        const path = join(runtime.cacheDir, name);
+        const stat = await fs.stat(path).catch(() => null);
+        if (stat && stat.mtimeMs < cutoff) {
+          await fs.unlink(path).catch(() => {});
+        }
+      }),
+    );
+  } catch {
+    // ignore cache cleanup errors
+  }
+}
+
+async function ensureCacheDir(): Promise<void> {
+  if (cachePrepared) return;
+  await fs.mkdir(runtime.cacheDir, { recursive: true });
+  cachePrepared = true;
+}
+
+export function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
+  let debug = false;
+  let printConfig = false;
+  const cleanArgs: string[] = [];
+  for (const arg of argv) {
+    if (arg === "--debug" || arg === "-d") debug = true;
+    else if (arg === "--print-config" || arg === "--config") printConfig = true;
+    else cleanArgs.push(arg);
+  }
+
+  if (debug && !process.env.SPEAKER_DEBUG) process.env.SPEAKER_DEBUG = "1";
+
+  const textIndex = cleanArgs.findIndex((arg) => arg === "--text" || arg === "-t");
+  return { text: textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" "), printConfig };
+}
+
+function printSafeConfig(): void {
+  const tmpdir = process.env.TMPDIR ?? "/tmp/";
+  const cacheDir = process.env.TTS_CACHE_DIR ?? `${tmpdir.replace(/\/?$/, "/")}speaker-tts-cache`;
+  const fields = [
+    ["SPEAKER_DEBUG", process.env.SPEAKER_DEBUG ?? ""],
+    ["TTS_PROVIDER", process.env.TTS_PROVIDER ?? DEFAULTS.TTS_PROVIDER],
+    ["VOICE", process.env.VOICE ?? DEFAULTS.VOICE],
+    ["VOLC_TTS_APPID", maskSecret(process.env.VOLC_TTS_APPID ?? "")],
+    ["VOLC_TTS_TOKEN", maskSecret(process.env.VOLC_TTS_TOKEN ?? "")],
+    ["VOLC_TTS_CLUSTER", process.env.VOLC_TTS_CLUSTER ?? DEFAULTS.VOLC_TTS_CLUSTER],
+    ["VOLC_TTS_RESOURCE_ID", process.env.VOLC_TTS_RESOURCE_ID ?? DEFAULTS.VOLC_TTS_RESOURCE_ID],
+    ["VOLC_TTS_VOICE_TYPE", process.env.VOLC_TTS_VOICE_TYPE ?? DEFAULTS.VOLC_TTS_VOICE_TYPE],
+    ["VOLC_TTS_MODEL", process.env.VOLC_TTS_MODEL ?? DEFAULTS.VOLC_TTS_MODEL],
+    ["VOLC_TTS_ENCODING", process.env.VOLC_TTS_ENCODING ?? DEFAULTS.VOLC_TTS_ENCODING],
+    ["VOLC_TTS_RATE", process.env.VOLC_TTS_RATE ?? DEFAULTS.VOLC_TTS_RATE],
+    ["VOLC_TTS_SPEED", process.env.VOLC_TTS_SPEED ?? DEFAULTS.VOLC_TTS_SPEED],
+    ["VOLC_TTS_VOLUME", process.env.VOLC_TTS_VOLUME ?? DEFAULTS.VOLC_TTS_VOLUME],
+    ["VOLC_TTS_PITCH", process.env.VOLC_TTS_PITCH ?? DEFAULTS.VOLC_TTS_PITCH],
+    ["MAX_TTS_TEXT_LEN", process.env.MAX_TTS_TEXT_LEN ?? DEFAULTS.MAX_TTS_TEXT_LEN],
+    ["TTS_TIMEOUT_MS", process.env.TTS_TIMEOUT_MS ?? DEFAULTS.TTS_TIMEOUT_MS],
+    ["TTS_CACHE_DIR", cacheDir],
+  ] as const;
+
+  for (const [key, value] of fields) {
+    console.log(`${key}=${value}`);
+  }
+}
+
+function refreshRuntimeConfig(): void {
+  runtime = readRuntimeConfig();
+}
+
+function readRuntimeConfig(): RuntimeConfig {
+  return {
+    voice: envString("VOICE", DEFAULTS.VOICE),
+    provider: envString("TTS_PROVIDER", DEFAULTS.TTS_PROVIDER).toLowerCase(),
+    appId: envString("VOLC_TTS_APPID", ""),
+    token: envString("VOLC_TTS_TOKEN", ""),
+    cluster: envString("VOLC_TTS_CLUSTER", DEFAULTS.VOLC_TTS_CLUSTER),
+    resourceId: envString("VOLC_TTS_RESOURCE_ID", DEFAULTS.VOLC_TTS_RESOURCE_ID),
+    voiceType: envString("VOLC_TTS_VOICE_TYPE", DEFAULTS.VOLC_TTS_VOICE_TYPE),
+    model: envString("VOLC_TTS_MODEL", DEFAULTS.VOLC_TTS_MODEL),
+    encoding: envString("VOLC_TTS_ENCODING", DEFAULTS.VOLC_TTS_ENCODING),
+    rate: envNumber("VOLC_TTS_RATE", DEFAULTS.VOLC_TTS_RATE),
+    speed: envNumber("VOLC_TTS_SPEED", DEFAULTS.VOLC_TTS_SPEED),
+    volume: envNumber("VOLC_TTS_VOLUME", DEFAULTS.VOLC_TTS_VOLUME),
+    pitch: envNumber("VOLC_TTS_PITCH", DEFAULTS.VOLC_TTS_PITCH),
+    maxTextLen: envNumber("MAX_TTS_TEXT_LEN", DEFAULTS.MAX_TTS_TEXT_LEN),
+    timeoutMs: envNumber("TTS_TIMEOUT_MS", DEFAULTS.TTS_TIMEOUT_MS),
+    cacheDir: process.env.TTS_CACHE_DIR ?? join(process.env.TMPDIR ?? "/tmp", "speaker-tts-cache"),
+  };
+}
+
+function hydrateEnvFromPlist(): void {
+  for (const key of ENV_KEYS) {
+    if (process.env[key]) continue;
+    const out = spawnSync("/usr/libexec/PlistBuddy", ["-c", `Print :EnvironmentVariables:${key}`, PLIST_PATH], {
+      encoding: "utf8",
+    });
+    const value = out.status === 0 ? out.stdout.trim() : "";
+    if (value) {
+      process.env[key] = value;
+    }
+  }
+}
+
+export function decodeTtsResponseBody(responseBytes: Uint8Array, contentType: string): Uint8Array {
+  if (responseBytes.byteLength === 0) {
+    throw new Error("TTS returned empty audio buffer");
+  }
+
+  const normalizedContentType = contentType.toLowerCase();
+  const likelyJson =
+    normalizedContentType.includes("application/json") ||
+    normalizedContentType.includes("text/plain") ||
+    responseBytes[0] === 0x7b;
+
+  if (!likelyJson) {
+    return responseBytes;
+  }
+
+  const text = new TextDecoder().decode(responseBytes);
+  try {
+    const parsed = JSON.parse(text);
+    const apiCode = (parsed as any)?.header?.code ?? (parsed as any)?.code;
+    if (typeof apiCode === "number" && apiCode !== 0 && apiCode !== 20000000) {
+      const message = (parsed as any)?.header?.message ?? (parsed as any)?.message ?? "unknown error";
+      throw new Error(`TTS API ${apiCode}: ${message}`);
+    }
+
+    const base64 = extractBase64Audio(parsed);
+    return Buffer.from(base64, "base64");
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    debugLog(`doubao failed reason=${reason}`);
-    await fallbackSpeakWithSay(text);
+    if (error instanceof Error && error.message.startsWith("TTS API ")) {
+      throw error;
+    }
+
+    const chunks = extractAudioChunksFromStreamingJson(text);
+    if (chunks.length > 0) {
+      return concatBytes(chunks);
+    }
+
+    throw new Error("TTS JSON response did not include audio data");
   }
 }
 
-export function speak(rawText: string): Promise<void> {
-  const task = queue.then(() => speakInternal(rawText));
-  queue = task.catch(() => {});
-  return task;
+export function extractAudioChunksFromStreamingJson(text: string): Uint8Array[] {
+  const audioChunks: Uint8Array[] = [];
+  const dataFieldRegex = /"data":"([^"]+)"/g;
+  let match: RegExpExecArray | null = null;
+  while ((match = dataFieldRegex.exec(text)) !== null) {
+    const maybeBase64 = stripAudioDataUriPrefix(match[1]);
+    if (!isLikelyBase64(maybeBase64)) continue;
+    audioChunks.push(Buffer.from(maybeBase64, "base64"));
+  }
+  return audioChunks;
 }
 
-export async function speakOnce(rawText: string): Promise<void> {
-  await speakInternal(rawText);
+export function extractBase64Audio(payload: unknown): string {
+  const data = payload as Record<string, unknown> | null;
+  const result = data && typeof data.result === "object" ? (data.result as Record<string, unknown>) : null;
+  const innerData = data && typeof data.data === "object" ? (data.data as Record<string, unknown>) : null;
+
+  const candidates = [data?.data, data?.audio, result?.audio, innerData?.audio, result?.data];
+
+  for (const value of candidates) {
+    if (typeof value !== "string") continue;
+    const cleaned = stripAudioDataUriPrefix(value);
+    if (isLikelyBase64(cleaned)) {
+      return cleaned;
+    }
+  }
+
+  throw new Error("No base64 audio found in response");
 }
 
-async function main() {
-  const { text, printConfig } = parseCliArgs(process.argv.slice(2));
-  hydrateEnvFromPlist();
-  refreshRuntimeConfig();
-  for (const message of [
-    `cli cwd=${process.cwd()}`,
-    `cli plist=${PLIST_PATH}`,
-    `cli provider=${process.env.TTS_PROVIDER ?? "doubao"}`,
-    `cli voice=${process.env.VOICE ?? "Samantha"}`,
-    `cli volc.appid=${maskSecret(process.env.VOLC_TTS_APPID ?? "")}`,
-    `cli volc.token=${maskSecret(process.env.VOLC_TTS_TOKEN ?? "")}`,
-    `cli volc.resource_id=${process.env.VOLC_TTS_RESOURCE_ID ?? ""}`,
-    `cli volc.voice_type=${process.env.VOLC_TTS_VOICE_TYPE ?? ""}`,
-    `cli text.length=${text.length}`,
-  ]) {
-    debugLog(message);
-  }
-
-  if (printConfig) {
-    printSafeConfig();
-    return;
-  }
-
-  if (!text.trim()) {
-    console.error("usage: bun run src/cli.ts [--debug|-d] [--print-config|--config] --text \"hello\"");
-    console.error("   or: bun run src/cli.ts [--debug|-d] [--print-config|--config] \"hello\"");
-    process.exit(1);
-  }
-
-  cleanupOldCacheFiles().catch(() => {});
-  await speak(text);
+export function toPitchSemitone(pitchRatio: number): number {
+  if (!Number.isFinite(pitchRatio)) return 0;
+  const semitone = Math.round(12 * Math.log2(Math.max(0.25, pitchRatio)));
+  return Math.max(-12, Math.min(12, semitone));
 }
 
-if (import.meta.main) {
-  main().catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`speak failed: ${message}`);
-    process.exit(1);
-  });
+export function toSpeechRate(speedRatio: number): number {
+  return ratioToPercentRate(speedRatio, -50, 100);
+}
+
+export function toLoudnessRate(volumeRatio: number): number {
+  return ratioToPercentRate(volumeRatio, -50, 100);
+}
+
+function ratioToPercentRate(ratio: number, min: number, max: number): number {
+  if (!Number.isFinite(ratio)) return 0;
+  return Math.max(min, Math.min(max, Math.round((ratio - 1) * 100)));
+}
+
+export function normalizeText(input: string, maxLen = 400): string {
+  const trimmed = input.replace(/\s+/g, " ").trim();
+  if (!trimmed) return "";
+  return trimmed.length > maxLen ? trimmed.slice(0, maxLen) : trimmed;
+}
+
+export function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+}
+
+function maskSecret(value: string): string {
+  if (!value) return "";
+  if (value.length <= 8) return `${value.slice(0, 2)}***`;
+  return `${value.slice(0, 4)}***${value.slice(-2)}`;
+}
+
+function debugLog(message: string): void {
+  if (["1", "true", "yes", "on"].includes((process.env.SPEAKER_DEBUG ?? "").toLowerCase())) {
+    console.error(`[speaker:debug] ${message}`);
+  }
+}
+
+function envString(name: string, fallback: string): string {
+  return process.env[name] ?? fallback;
+}
+
+function envNumber(name: string, fallback: string): number {
+  return Number(process.env[name] ?? fallback);
+}
+
+function stripAudioDataUriPrefix(value: string): string {
+  return value.replace(DATA_URI_AUDIO_PREFIX, "").trim();
+}
+
+function isLikelyBase64(value: string): boolean {
+  if (value.length < 8) return false;
+  if (value.length % 4 !== 0) return false;
+  return BASE64_REGEX.test(value);
 }
