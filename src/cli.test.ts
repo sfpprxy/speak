@@ -4,6 +4,7 @@ import {
   decodeTtsResponseBody,
   extractBase64Audio,
   normalizeText,
+  parseCliArgs,
   toLoudnessRate,
   toPitchSemitone,
   toSpeechRate,
@@ -80,5 +81,17 @@ describe("tts payload decoding", () => {
     const raw = Buffer.from([1, 2, 3, 4]);
     const decoded = decodeTtsResponseBody(raw, "audio/mpeg");
     expect(Array.from(decoded)).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe("cli arg parsing", () => {
+  it("keeps dash-prefixed text as positional input", () => {
+    const parsed = parseCliArgs(["-hello"]);
+    expect(parsed).toEqual({ text: "-hello", printConfig: false });
+  });
+
+  it("supports explicit text option with dash-prefixed value", () => {
+    const parsed = parseCliArgs(["-t", "-hello"]);
+    expect(parsed).toEqual({ text: "-hello", printConfig: false });
   });
 });

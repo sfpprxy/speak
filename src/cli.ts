@@ -91,14 +91,7 @@ export function normalizeText(input: string, maxLen = 400): string {
 }
 
 export function concatBytes(chunks: Uint8Array[]): Uint8Array {
-  const totalSize = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const merged = new Uint8Array(totalSize);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return merged;
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
 }
 
 export function toSpeechRate(speedRatio: number): number {
@@ -267,7 +260,7 @@ function printSafeConfig(): void {
   }
 }
 
-function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
+export function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
   let debug = false;
   let printConfig = false;
   const cleanArgs: string[] = [];
@@ -289,14 +282,11 @@ function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
 
   const textIndex = cleanArgs.findIndex((arg) => arg === "--text" || arg === "-t");
   const text = textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" ");
-
   return { text, printConfig };
 }
 
 function withTimeoutSignal(timeoutMs: number): AbortSignal {
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), timeoutMs).unref?.();
-  return controller.signal;
+  return AbortSignal.timeout(timeoutMs);
 }
 
 async function ensureCacheDir(): Promise<void> {
