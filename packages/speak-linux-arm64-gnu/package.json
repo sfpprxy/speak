@@ -1,6 +1,6 @@
 {
   "name": "@sfpprxy/speak-linux-arm64-gnu",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "description": "speak binary for linux arm64 glibc",
   "license": "MIT",
   "os": ["linux"],
