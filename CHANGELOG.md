@@ -6,6 +6,15 @@ The format is based on Keep a Changelog and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-02-13
+
+### Added
+- `speak -v` and `speak --version` support.
+
+### Changed
+- Help output now includes the version option.
+- README command examples updated to include version usage.
+
 ## [0.1.8] - 2026-02-13
 
 ### Changed

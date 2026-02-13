@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 const DATA_URI_AUDIO_PREFIX = /^data:audio\/[a-zA-Z0-9.+-]+;base64,/;
@@ -69,9 +70,13 @@ let queue: Promise<void> = Promise.resolve();
 let cachePrepared = false;
 
 async function main() {
-  const { text, printConfig, printHelp } = parseCliArgs(process.argv.slice(2));
+  const { text, printConfig, printHelp, printVersion } = parseCliArgs(process.argv.slice(2));
   if (printHelp) {
     printHelpText();
+    return;
+  }
+  if (printVersion) {
+    console.log(resolveCliVersion());
     return;
   }
   hydrateEnvFromPlist();
@@ -387,15 +392,22 @@ async function ensureAuthToken(): Promise<void> {
   }
 }
 
-export function parseCliArgs(argv: string[]): { text: string; printConfig: boolean; printHelp: boolean } {
+export function parseCliArgs(argv: string[]): {
+  text: string;
+  printConfig: boolean;
+  printHelp: boolean;
+  printVersion: boolean;
+} {
   let debug = false;
   let printConfig = false;
   let printHelp = false;
+  let printVersion = false;
   const cleanArgs: string[] = [];
   for (const arg of argv) {
     if (arg === "--debug" || arg === "-d") debug = true;
     else if (arg === "--print-config" || arg === "--config") printConfig = true;
     else if (arg === "--help" || arg === "-h") printHelp = true;
+    else if (arg === "--version" || arg === "-v") printVersion = true;
     else cleanArgs.push(arg);
   }
 
@@ -406,12 +418,14 @@ export function parseCliArgs(argv: string[]): { text: string; printConfig: boole
     text: textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" "),
     printConfig,
     printHelp,
+    printVersion,
   };
 }
 
 function printHelpText(): void {
   const optionRows: Array<[string, string]> = [
     ["-h, --help", "Show this help"],
+    ["-v, --version", "Show version"],
     ["-d, --debug", "Enable debug logs"],
     ["--print-config, --config", "Print effective config and exit"],
     ["-t, --text <text>", "Text to speak"],
@@ -425,6 +439,25 @@ function printHelpText(): void {
   for (const [flags, description] of optionRows) {
     console.error(`  ${flags.padEnd(optionWidth)}${description}`);
   }
+}
+
+function resolveCliVersion(): string {
+  const envVersion = process.env.npm_package_version;
+  if (envVersion) return envVersion;
+
+  const candidates = [join(dirname(process.execPath), "..", "package.json"), join(process.cwd(), "package.json")];
+  for (const path of candidates) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown };
+      if (typeof parsed.version === "string" && parsed.version.trim()) {
+        return parsed.version;
+      }
+    } catch {
+      // try next path
+    }
+  }
+
+  return "unknown";
 }
 
 function printSafeConfig(): void {

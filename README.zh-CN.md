@@ -22,6 +22,7 @@ speak "任务完成"
 speak --print-config
 speak -h
 speak --help
+speak -v
 speak --debug "任务完成"
 ```
 
