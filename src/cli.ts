@@ -94,16 +94,17 @@ export function concatBytes(chunks: Uint8Array[]): Uint8Array {
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
 }
 
+function ratioToPercentRate(ratio: number, min: number, max: number): number {
+  if (!Number.isFinite(ratio)) return 0;
+  return Math.max(min, Math.min(max, Math.round((ratio - 1) * 100)));
+}
+
 export function toSpeechRate(speedRatio: number): number {
-  if (!Number.isFinite(speedRatio)) return 0;
-  const value = Math.round((speedRatio - 1) * 100);
-  return Math.max(-50, Math.min(100, value));
+  return ratioToPercentRate(speedRatio, -50, 100);
 }
 
 export function toLoudnessRate(volumeRatio: number): number {
-  if (!Number.isFinite(volumeRatio)) return 0;
-  const value = Math.round((volumeRatio - 1) * 100);
-  return Math.max(-50, Math.min(100, value));
+  return ratioToPercentRate(volumeRatio, -50, 100);
 }
 
 export function toPitchSemitone(pitchRatio: number): number {
@@ -265,28 +266,15 @@ export function parseCliArgs(argv: string[]): { text: string; printConfig: boole
   let printConfig = false;
   const cleanArgs: string[] = [];
   for (const arg of argv) {
-    if (arg === "--debug" || arg === "-d") {
-      debug = true;
-      continue;
-    }
-    if (arg === "--print-config" || arg === "--config") {
-      printConfig = true;
-      continue;
-    }
-    cleanArgs.push(arg);
+    if (arg === "--debug" || arg === "-d") debug = true;
+    else if (arg === "--print-config" || arg === "--config") printConfig = true;
+    else cleanArgs.push(arg);
   }
 
-  if (debug && !process.env.SPEAKER_DEBUG) {
-    process.env.SPEAKER_DEBUG = "1";
-  }
+  if (debug && !process.env.SPEAKER_DEBUG) process.env.SPEAKER_DEBUG = "1";
 
   const textIndex = cleanArgs.findIndex((arg) => arg === "--text" || arg === "-t");
-  const text = textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" ");
-  return { text, printConfig };
-}
-
-function withTimeoutSignal(timeoutMs: number): AbortSignal {
-  return AbortSignal.timeout(timeoutMs);
+  return { text: textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" "), printConfig };
 }
 
 async function ensureCacheDir(): Promise<void> {
@@ -314,30 +302,26 @@ async function cleanupOldCacheFiles(days = 7): Promise<void> {
   }
 }
 
-async function playMp3File(path: string): Promise<void> {
-  debugLog(`afplay start file=${path}`);
-  const proc = Bun.spawn(["afplay", path], {
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  const exitCode = await proc.exited;
-  debugLog(`afplay exit_code=${exitCode}`);
+async function runAudioCommand(args: string[], startLog: string, endLogPrefix: string, errorName: string): Promise<void> {
+  debugLog(startLog);
+  const exitCode = await Bun.spawn(args, { stdout: "ignore", stderr: "ignore" }).exited;
+  debugLog(`${endLogPrefix}${exitCode}`);
   if (exitCode !== 0) {
-    throw new Error(`afplay exited with code ${exitCode}`);
+    throw new Error(`${errorName} exited with code ${exitCode}`);
   }
 }
 
+async function playMp3File(path: string): Promise<void> {
+  await runAudioCommand(["afplay", path], `afplay start file=${path}`, "afplay exit_code=", "afplay");
+}
+
 async function fallbackSpeakWithSay(text: string): Promise<void> {
-  debugLog(`fallback say start voice=${runtime.voice} text_len=${text.length}`);
-  const proc = Bun.spawn(["say", "-v", runtime.voice, text], {
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  const exitCode = await proc.exited;
-  debugLog(`fallback say exit_code=${exitCode}`);
-  if (exitCode !== 0) {
-    throw new Error(`say exited with code ${exitCode}`);
-  }
+  await runAudioCommand(
+    ["say", "-v", runtime.voice, text],
+    `fallback say start voice=${runtime.voice} text_len=${text.length}`,
+    "fallback say exit_code=",
+    "say",
+  );
 }
 
 async function synthesizeDoubaoMp3(text: string): Promise<Uint8Array> {
@@ -380,7 +364,7 @@ async function synthesizeDoubaoMp3(text: string): Promise<Uint8Array> {
       "X-Api-Request-Id": randomUUID(),
     },
     body: JSON.stringify(payload),
-    signal: withTimeoutSignal(runtime.timeoutMs),
+    signal: AbortSignal.timeout(runtime.timeoutMs),
   });
 
   if (!response.ok) {
@@ -463,15 +447,19 @@ async function main() {
   const { text, printConfig } = parseCliArgs(process.argv.slice(2));
   hydrateEnvFromPlist();
   refreshRuntimeConfig();
-  debugLog(`cli cwd=${process.cwd()}`);
-  debugLog(`cli plist=${PLIST_PATH}`);
-  debugLog(`cli provider=${process.env.TTS_PROVIDER ?? "doubao"}`);
-  debugLog(`cli voice=${process.env.VOICE ?? "Samantha"}`);
-  debugLog(`cli volc.appid=${maskSecret(process.env.VOLC_TTS_APPID ?? "")}`);
-  debugLog(`cli volc.token=${maskSecret(process.env.VOLC_TTS_TOKEN ?? "")}`);
-  debugLog(`cli volc.resource_id=${process.env.VOLC_TTS_RESOURCE_ID ?? ""}`);
-  debugLog(`cli volc.voice_type=${process.env.VOLC_TTS_VOICE_TYPE ?? ""}`);
-  debugLog(`cli text.length=${text.length}`);
+  for (const message of [
+    `cli cwd=${process.cwd()}`,
+    `cli plist=${PLIST_PATH}`,
+    `cli provider=${process.env.TTS_PROVIDER ?? "doubao"}`,
+    `cli voice=${process.env.VOICE ?? "Samantha"}`,
+    `cli volc.appid=${maskSecret(process.env.VOLC_TTS_APPID ?? "")}`,
+    `cli volc.token=${maskSecret(process.env.VOLC_TTS_TOKEN ?? "")}`,
+    `cli volc.resource_id=${process.env.VOLC_TTS_RESOURCE_ID ?? ""}`,
+    `cli volc.voice_type=${process.env.VOLC_TTS_VOICE_TYPE ?? ""}`,
+    `cli text.length=${text.length}`,
+  ]) {
+    debugLog(message);
+  }
 
   if (printConfig) {
     printSafeConfig();
