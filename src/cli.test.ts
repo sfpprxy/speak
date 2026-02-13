@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import {
   decodeTtsResponseBody,
   extractBase64Audio,
+  parseAuthFileToken,
   normalizeText,
   parseCliArgs,
   toLoudnessRate,
@@ -93,5 +94,17 @@ describe("cli arg parsing", () => {
   it("supports explicit text option with dash-prefixed value", () => {
     const parsed = parseCliArgs(["-t", "-hello"]);
     expect(parsed).toEqual({ text: "-hello", printConfig: false });
+  });
+});
+
+describe("auth file parsing", () => {
+  it("extracts token from valid auth.json content", () => {
+    const token = parseAuthFileToken('{ "VOLC_TTS_TOKEN": "abc123" }');
+    expect(token).toBe("abc123");
+  });
+
+  it("returns empty token for invalid content", () => {
+    expect(parseAuthFileToken("{bad json")).toBe("");
+    expect(parseAuthFileToken('{ "VOLC_TTS_TOKEN": 123 }')).toBe("");
   });
 });

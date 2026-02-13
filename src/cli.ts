@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
 
 const DATA_URI_AUDIO_PREFIX = /^data:audio\/[a-zA-Z0-9.+-]+;base64,/;
 const BASE64_REGEX = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -10,9 +11,7 @@ const BASE64_REGEX = /^[A-Za-z0-9+/]+={0,2}$/;
 const PLIST_PATH = `${process.env.HOME ?? ""}/Library/LaunchAgents/com.joe.speaker.plist`;
 const ENV_KEYS = [
   "TTS_PROVIDER",
-  "VOICE",
   "VOLC_TTS_APPID",
-  "VOLC_TTS_TOKEN",
   "VOLC_TTS_CLUSTER",
   "VOLC_TTS_RESOURCE_ID",
   "VOLC_TTS_VOICE_TYPE",
@@ -26,10 +25,12 @@ const ENV_KEYS = [
   "TTS_TIMEOUT_MS",
   "TTS_CACHE_DIR",
 ] as const;
+const AUTH_DIR = join(process.env.HOME ?? ".", ".speak");
+const AUTH_FILE = join(AUTH_DIR, "auth.json");
 
 const DEFAULTS = {
   TTS_PROVIDER: "doubao",
-  VOICE: "Samantha",
+  VOLC_TTS_APPID: "3864509867",
   VOLC_TTS_CLUSTER: "volcano_tts",
   VOLC_TTS_RESOURCE_ID: "volc.seedtts.default",
   VOLC_TTS_VOICE_TYPE: "zh_female_vv_uranus_bigtts",
@@ -44,7 +45,6 @@ const DEFAULTS = {
 } as const;
 
 type RuntimeConfig = {
-  voice: string;
   provider: string;
   appId: string;
   token: string;
@@ -62,6 +62,8 @@ type RuntimeConfig = {
   cacheDir: string;
 };
 
+let persistedAuthToken = "";
+let authTokenHydrated = false;
 let runtime = readRuntimeConfig();
 let queue: Promise<void> = Promise.resolve();
 let cachePrepared = false;
@@ -70,15 +72,15 @@ async function main() {
   const { text, printConfig } = parseCliArgs(process.argv.slice(2));
   hydrateEnvFromPlist();
   refreshRuntimeConfig();
+  await hydrateAuthTokenFromDisk();
   for (const message of [
     `cli cwd=${process.cwd()}`,
     `cli plist=${PLIST_PATH}`,
-    `cli provider=${process.env.TTS_PROVIDER ?? "doubao"}`,
-    `cli voice=${process.env.VOICE ?? "Samantha"}`,
-    `cli volc.appid=${maskSecret(process.env.VOLC_TTS_APPID ?? "")}`,
-    `cli volc.token=${maskSecret(process.env.VOLC_TTS_TOKEN ?? "")}`,
-    `cli volc.resource_id=${process.env.VOLC_TTS_RESOURCE_ID ?? ""}`,
-    `cli volc.voice_type=${process.env.VOLC_TTS_VOICE_TYPE ?? ""}`,
+    `cli provider=${runtime.provider}`,
+    `cli volc.appid=${maskSecret(runtime.appId)}`,
+    `cli volc.token=${maskSecret(runtime.token)}`,
+    `cli volc.resource_id=${runtime.resourceId}`,
+    `cli volc.voice_type=${runtime.voiceType}`,
     `cli text.length=${text.length}`,
   ]) {
     debugLog(message);
@@ -119,24 +121,19 @@ export async function speakOnce(rawText: string): Promise<void> {
 
 async function speakInternal(rawText: string): Promise<void> {
   refreshRuntimeConfig();
+  await hydrateAuthTokenFromDisk();
   const text = normalizeText(rawText, runtime.maxTextLen);
   if (!text) {
     throw new Error("text is required");
   }
   debugLog(`speak start provider=${runtime.provider} text_len=${text.length}`);
 
-  if (runtime.provider === "say") {
-    await fallbackSpeakWithSay(text);
-    return;
+  if (runtime.provider !== "doubao") {
+    throw new Error(`unsupported TTS_PROVIDER: ${runtime.provider}`);
   }
+  await ensureAuthToken();
 
-  try {
-    await synthesizeAndPlayWithDoubao(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    debugLog(`doubao failed reason=${reason}`);
-    await fallbackSpeakWithSay(text);
-  }
+  await synthesizeAndPlayWithDoubao(text);
 }
 
 async function synthesizeAndPlayWithDoubao(text: string): Promise<void> {
@@ -226,15 +223,6 @@ async function synthesizeDoubaoMp3(text: string): Promise<Uint8Array> {
   return decodeTtsResponseBody(responseBytes, contentType);
 }
 
-async function fallbackSpeakWithSay(text: string): Promise<void> {
-  await runAudioCommand(
-    ["say", "-v", runtime.voice, text],
-    `fallback say start voice=${runtime.voice} text_len=${text.length}`,
-    "fallback say exit_code=",
-    "say",
-  );
-}
-
 async function playMp3File(path: string): Promise<void> {
   await runAudioCommand(["afplay", path], `afplay start file=${path}`, "afplay exit_code=", "afplay");
 }
@@ -273,6 +261,53 @@ async function ensureCacheDir(): Promise<void> {
   cachePrepared = true;
 }
 
+export function parseAuthFileToken(jsonText: string): string {
+  try {
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+    return typeof parsed.VOLC_TTS_TOKEN === "string" ? parsed.VOLC_TTS_TOKEN.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+async function hydrateAuthTokenFromDisk(): Promise<void> {
+  if (!authTokenHydrated) {
+    authTokenHydrated = true;
+    persistedAuthToken = await fs
+      .readFile(AUTH_FILE, "utf8")
+      .then((content) => parseAuthFileToken(content))
+      .catch(() => "");
+  }
+  if (persistedAuthToken && !runtime.token) {
+    runtime.token = persistedAuthToken;
+  }
+}
+
+async function ensureAuthToken(): Promise<void> {
+  if (runtime.token) return;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(`VOLC_TTS_TOKEN is missing. Run once in a terminal to save token at ${AUTH_FILE}`);
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const token = (await rl.question("First run: enter VOLC_TTS_TOKEN: ")).trim();
+    if (!token) {
+      throw new Error("VOLC_TTS_TOKEN is required");
+    }
+    await fs.mkdir(AUTH_DIR, { recursive: true, mode: 0o700 });
+    await fs.writeFile(AUTH_FILE, `${JSON.stringify({ VOLC_TTS_TOKEN: token }, null, 2)}\n`, { mode: 0o600 });
+    await fs.chmod(AUTH_DIR, 0o700).catch(() => {});
+    await fs.chmod(AUTH_FILE, 0o600).catch(() => {});
+    persistedAuthToken = token;
+    authTokenHydrated = true;
+    runtime.token = token;
+    console.error(`saved VOLC_TTS_TOKEN to ${AUTH_FILE}`);
+  } finally {
+    rl.close();
+  }
+}
+
 export function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
   let debug = false;
   let printConfig = false;
@@ -295,9 +330,8 @@ function printSafeConfig(): void {
   const fields = [
     ["SPEAKER_DEBUG", process.env.SPEAKER_DEBUG ?? ""],
     ["TTS_PROVIDER", process.env.TTS_PROVIDER ?? DEFAULTS.TTS_PROVIDER],
-    ["VOICE", process.env.VOICE ?? DEFAULTS.VOICE],
-    ["VOLC_TTS_APPID", maskSecret(process.env.VOLC_TTS_APPID ?? "")],
-    ["VOLC_TTS_TOKEN", maskSecret(process.env.VOLC_TTS_TOKEN ?? "")],
+    ["VOLC_TTS_APPID", maskSecret(process.env.VOLC_TTS_APPID ?? DEFAULTS.VOLC_TTS_APPID)],
+    ["VOLC_TTS_TOKEN", maskSecret(runtime.token)],
     ["VOLC_TTS_CLUSTER", process.env.VOLC_TTS_CLUSTER ?? DEFAULTS.VOLC_TTS_CLUSTER],
     ["VOLC_TTS_RESOURCE_ID", process.env.VOLC_TTS_RESOURCE_ID ?? DEFAULTS.VOLC_TTS_RESOURCE_ID],
     ["VOLC_TTS_VOICE_TYPE", process.env.VOLC_TTS_VOICE_TYPE ?? DEFAULTS.VOLC_TTS_VOICE_TYPE],
@@ -323,10 +357,9 @@ function refreshRuntimeConfig(): void {
 
 function readRuntimeConfig(): RuntimeConfig {
   return {
-    voice: envString("VOICE", DEFAULTS.VOICE),
     provider: envString("TTS_PROVIDER", DEFAULTS.TTS_PROVIDER).toLowerCase(),
-    appId: envString("VOLC_TTS_APPID", ""),
-    token: envString("VOLC_TTS_TOKEN", ""),
+    appId: envString("VOLC_TTS_APPID", DEFAULTS.VOLC_TTS_APPID),
+    token: persistedAuthToken,
     cluster: envString("VOLC_TTS_CLUSTER", DEFAULTS.VOLC_TTS_CLUSTER),
     resourceId: envString("VOLC_TTS_RESOURCE_ID", DEFAULTS.VOLC_TTS_RESOURCE_ID),
     voiceType: envString("VOLC_TTS_VOICE_TYPE", DEFAULTS.VOLC_TTS_VOICE_TYPE),
