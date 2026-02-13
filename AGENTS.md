@@ -70,3 +70,9 @@ When audio report playback is needed, use:
 ```bash
 bun run /Users/joe/Sync/Work/speaker/src/cli.ts "report content"
 ```
+
+## Release Git Workflow Rules
+
+1. For releases, always commit and tag before pushing.
+2. For releases, always run tests and a final check before creating the tagged release commit.
+3. For releases, stop immediately on any failure.

@@ -6,6 +6,15 @@ The format is based on Keep a Changelog and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-02-13
+
+### Changed
+- Release workflow now uses direct changelog text for GitHub release notes.
+- Release git workflow rules were clarified to require:
+  - commit and tag before push for releases
+  - tests/final checks before tagged release commit
+  - immediate stop on any failure
+
 ## [0.1.7] - 2026-02-13
 
 ### Added
