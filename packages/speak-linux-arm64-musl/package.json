@@ -1,6 +1,6 @@
 {
   "name": "@sfpprxy/speak-linux-arm64-musl",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "speak binary for linux arm64 musl",
   "license": "MIT",
   "os": ["linux"],

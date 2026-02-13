@@ -1,8 +1,12 @@
 # speak
 
-English docs. Chinese version: [README.zh-CN.md](./README.zh-CN.md)
+English docs. 中文版：[README.zh-CN.md](./README.zh-CN.md)
 
 `speak` is a cross-platform command-line text-to-speech tool.
+
+Release notes:
+- GitHub Releases: `https://github.com/sfpprxy/speak/releases`
+- Changelog: [CHANGELOG.md](./CHANGELOG.md)
 
 Install and run:
 
@@ -16,7 +20,26 @@ speak "Hello, world"
 ```bash
 speak "Task completed"
 speak --print-config
+speak -h
+speak --help
 speak --debug "Task completed"
+```
+
+## Help Output
+
+```bash
+speak -h
+```
+
+```text
+Usage: speak [options] --text "hello"
+   or: speak [options] "hello"
+
+Options:
+  -h, --help                Show this help
+  -d, --debug               Enable debug logs
+  --print-config, --config  Print effective config and exit
+  -t, --text <text>         Text to speak
 ```
 
 ## First Run

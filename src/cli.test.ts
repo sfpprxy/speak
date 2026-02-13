@@ -88,12 +88,17 @@ describe("tts payload decoding", () => {
 describe("cli arg parsing", () => {
   it("keeps dash-prefixed text as positional input", () => {
     const parsed = parseCliArgs(["-hello"]);
-    expect(parsed).toEqual({ text: "-hello", printConfig: false });
+    expect(parsed).toEqual({ text: "-hello", printConfig: false, printHelp: false });
   });
 
   it("supports explicit text option with dash-prefixed value", () => {
     const parsed = parseCliArgs(["-t", "-hello"]);
-    expect(parsed).toEqual({ text: "-hello", printConfig: false });
+    expect(parsed).toEqual({ text: "-hello", printConfig: false, printHelp: false });
+  });
+
+  it("enables help output via short and long flags", () => {
+    expect(parseCliArgs(["-h"]).printHelp).toBe(true);
+    expect(parseCliArgs(["--help"]).printHelp).toBe(true);
   });
 });
 

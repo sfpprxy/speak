@@ -69,7 +69,11 @@ let queue: Promise<void> = Promise.resolve();
 let cachePrepared = false;
 
 async function main() {
-  const { text, printConfig } = parseCliArgs(process.argv.slice(2));
+  const { text, printConfig, printHelp } = parseCliArgs(process.argv.slice(2));
+  if (printHelp) {
+    printHelpText();
+    return;
+  }
   hydrateEnvFromPlist();
   refreshRuntimeConfig();
   await hydrateAuthTokenFromDisk();
@@ -92,8 +96,7 @@ async function main() {
   }
 
   if (!text.trim()) {
-    console.error("usage: bun run src/cli.ts [--debug|-d] [--print-config|--config] --text \"hello\"");
-    console.error("   or: bun run src/cli.ts [--debug|-d] [--print-config|--config] \"hello\"");
+    printHelpText();
     process.exit(1);
   }
 
@@ -384,20 +387,44 @@ async function ensureAuthToken(): Promise<void> {
   }
 }
 
-export function parseCliArgs(argv: string[]): { text: string; printConfig: boolean } {
+export function parseCliArgs(argv: string[]): { text: string; printConfig: boolean; printHelp: boolean } {
   let debug = false;
   let printConfig = false;
+  let printHelp = false;
   const cleanArgs: string[] = [];
   for (const arg of argv) {
     if (arg === "--debug" || arg === "-d") debug = true;
     else if (arg === "--print-config" || arg === "--config") printConfig = true;
+    else if (arg === "--help" || arg === "-h") printHelp = true;
     else cleanArgs.push(arg);
   }
 
   if (debug && !process.env.SPEAKER_DEBUG) process.env.SPEAKER_DEBUG = "1";
 
   const textIndex = cleanArgs.findIndex((arg) => arg === "--text" || arg === "-t");
-  return { text: textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" "), printConfig };
+  return {
+    text: textIndex >= 0 ? (cleanArgs[textIndex + 1] ?? "") : cleanArgs.join(" "),
+    printConfig,
+    printHelp,
+  };
+}
+
+function printHelpText(): void {
+  const optionRows: Array<[string, string]> = [
+    ["-h, --help", "Show this help"],
+    ["-d, --debug", "Enable debug logs"],
+    ["--print-config, --config", "Print effective config and exit"],
+    ["-t, --text <text>", "Text to speak"],
+  ];
+  const optionWidth = optionRows.reduce((max, [flags]) => Math.max(max, flags.length), 0) + 2;
+
+  console.error("Usage: speak [options] --text \"hello\"");
+  console.error("   or: speak [options] \"hello\"");
+  console.error("");
+  console.error("Options:");
+  for (const [flags, description] of optionRows) {
+    console.error(`  ${flags.padEnd(optionWidth)}${description}`);
+  }
 }
 
 function printSafeConfig(): void {

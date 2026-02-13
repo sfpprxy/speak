@@ -7,6 +7,7 @@ This repo ships a CLI-only TTS tool. End-user install flow:
 ```bash
 npm i -g @sfpprxy/speak
 speak "hello"
+speak -h
 ```
 
 ## Package Layout
@@ -54,6 +55,13 @@ Runtime logic remains in `src/cli.ts`.
 2. `npm run build:binaries` succeeds.
 3. Main package dry-run is small (no bundled cross-platform binaries).
 4. Platform package dry-run contains exactly one binary for that platform.
+
+## Progress Snapshot (2026-02-13)
+
+- Latest commit for architecture migration: `d685d82`.
+- Confirmed: main dry-run tarball reduced to ~`3.7 kB`.
+- Confirmed: platform package dry-runs produce single-binary tarballs.
+- Confirmed: real publish not executed in this session.
 
 ## Reporting Convention
 

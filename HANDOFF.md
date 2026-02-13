@@ -30,7 +30,6 @@
 - 更新 launcher：从本地 `dist/bin` 读取，改为从已安装平台子包解析二进制。
 - `src/cli.ts` 已支持平台化播放器回退，且 plist 仅在 macOS 读取。
 - `README.md` 改为英文用户文档，并新增 `README.zh-CN.md`。
-- `publish.sh` 已改为**非交互**发布（不再 y/n 确认，失败即退出，全程写日志）。
 - 新增 GitHub Actions 发布工作流：`.github/workflows/publish.yml`（token 模式，子包先发，主包后发）。
 
 ## 进展快照（2026-02-13）
@@ -48,6 +47,7 @@
 
 ## 稳定行为说明
 - 安装后：`speak "text"`
+- 帮助：`speak -h` / `speak --help`
 - 调试：`speak --debug "text"`
 - 配置查看：`speak --print-config` / `--config`
 - 缺少 token：
@@ -64,7 +64,6 @@
   - 主包 dry-run：`npm pack --dry-run --cache /tmp/npm-cache-speaker`
   - 子包 dry-run（示例）：
     - `cd packages/speak-darwin-arm64 && npm pack --dry-run --cache /tmp/npm-cache-speaker`
-  - 一键真实发布（非交互，失败即停）：`./publish.sh`
   - CI 发布（GitHub Actions）：触发 `.github/workflows/publish.yml`
 
 ## 验证状态

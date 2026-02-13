@@ -4,6 +4,10 @@ English docs: [README.md](./README.md)
 
 `speak` 是一个跨平台命令行语音播报工具。
 
+版本变更记录：
+- GitHub Releases：`https://github.com/sfpprxy/speak/releases`
+- Changelog：[CHANGELOG.md](./CHANGELOG.md)
+
 安装后可直接使用：
 
 ```bash
@@ -16,7 +20,26 @@ speak "你好，世界"
 ```bash
 speak "任务完成"
 speak --print-config
+speak -h
+speak --help
 speak --debug "任务完成"
+```
+
+## 帮助输出
+
+```bash
+speak -h
+```
+
+```text
+Usage: speak [options] --text "hello"
+   or: speak [options] "hello"
+
+Options:
+  -h, --help                Show this help
+  -d, --debug               Enable debug logs
+  --print-config, --config  Print effective config and exit
+  -t, --text <text>         Text to speak
 ```
 
 ## 首次使用
